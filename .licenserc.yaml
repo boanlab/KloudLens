@@ -1,0 +1,26 @@
+header:
+  license:
+    spdx-id: Apache-2.0
+    copyright-owner: BoanLab @ Dankook University
+    content: |
+      SPDX-License-Identifier: Apache-2.0
+
+  paths:
+    - "**/*.go"
+    - "**/Makefile"
+    - "**/Dockerfile"
+
+  paths-ignore:
+    - "protobuf/*.pb.go"
+    - "internal/sensor/bpf/*_bpfel*"
+    - "internal/sensor/bpf/*_bpfeb*"
+    - "bpf/*.o"
+
+  comment: on-failure
+
+dependency:
+  files:
+    - go.mod
+  excludes:
+    - name: github.com/hashicorp/hcl
+      version: v1.0.0

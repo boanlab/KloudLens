@@ -1,0 +1,494 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 BoanLab @ DKU
+
+syntax = "proto3";
+
+package kloudlens.v1;
+
+option go_package = "github.com/boanlab/kloudlens/protobuf";
+
+// IntentExporter streams node-local IntentEvents to a collector. The
+// agent initiates the stream; the collector replies with a single ack
+// when the client closes its half.
+service IntentExporter {
+  rpc Stream(stream IntentEvent) returns (StreamAck);
+}
+
+// EventService is the pull-side complement to IntentExporter — external
+// subscribers connect to an agent (or aggregator) and pull events with a
+// durable cursor.
+service EventService {
+  rpc Subscribe(SubscribeRequest) returns (stream EventEnvelope);
+  rpc Ack(AckRequest) returns (AckResponse);
+  rpc Snapshot(SnapshotRequest) returns (stream EventEnvelope);
+
+  // Typed-stream RPCs. Subscribe() remains for consumers that want the
+  // multiplexed EventEnvelope.
+  //
+  // SubscribeIntents is equivalent to Subscribe(streams=["intent"]) but the
+  // response is IntentEvent directly (no envelope/cursor wrapping). Consumers
+  // that already persist cursors out-of-band (prom/otel collectors) prefer
+  // this shape — it halves wire size and removes the oneof unpacking cost.
+  rpc SubscribeIntents(IntentStreamRequest) returns (stream IntentEvent);
+
+  // SubscribeDeviations is the typed deviation tail — it stays live-only
+  // because DeviationStreamRequest intentionally has no cursor field.
+  // Clients that want cursor-based resume of past deviations should use the
+  // generic Subscribe(streams=["deviation"]) envelope RPC, which replays
+  // from the WAL's "deviation" stream via wal.AppendDeviation.
+  rpc SubscribeDeviations(DeviationStreamRequest) returns (stream DeviationEvent);
+
+  // SubscribeRaw is the typed raw-syscall tail — live-only, no cursor,
+  // gated by --enable-raw-stream on the agent because the event rate is
+  // orders of magnitude higher than the intent stream. Clients that need
+  // durable replay should use Subscribe(streams=["raw"]) which pulls
+  // from the WAL's "raw" stream.
+  rpc SubscribeRaw(RawStreamRequest) returns (stream SyscallEvent);
+
+  // QueryGraph runs a single fixed query against the agent's Session Graph
+  // — lineage/peers/touches/reaches. Unary; large results are truncated by
+  // max_depth rather than streamed.
+  rpc QueryGraph(GraphQuery) returns (GraphSnapshot);
+
+  // SubscribeSession tails live edges scoped to one session. Emits a final
+  // SessionUpdate{closed=true} when the session's TTL expires.
+  rpc SubscribeSession(SessionStreamRequest) returns (stream SessionUpdate);
+}
+
+// AdminService is the klctl ↔ daemon control plane.
+service AdminService {
+  rpc GetStatus(Empty) returns (AgentStatus);
+  rpc ListPolicies(Empty) returns (PolicyList);
+  rpc ApplyPolicy(Policy) returns (ApplyResult);
+  rpc DeletePolicy(PolicyRef) returns (DeleteResult);
+  rpc Diagnose(Empty) returns (DiagnoseReport);
+  rpc GetCapabilities(Empty) returns (CapabilityReport);
+  rpc Top(TopRequest) returns (stream TopSnapshot);
+  rpc Dump(DumpRequest) returns (stream EventEnvelope);
+
+  // Dynamic baseline lifecycle — lets klctl drive the learner/detector
+  // without restarting kloudlens.
+  rpc BaselineReset(Empty) returns (Empty);
+  rpc BaselinePromote(PromoteRequest) returns (PromoteResponse);
+  rpc BaselineActivate(ActivateRequest) returns (ActivateResponse);
+
+  // Runtime-tunable configuration. GetConfig returns the whitelist of keys
+  // the agent will accept via SetConfig; SetConfig applies one or more
+  // key=value pairs atomically (per-key — there is no rollback across the
+  // batch). Unknown keys come back in the errors map so klctl can print
+  // them verbatim.
+  rpc GetConfig(Empty) returns (ConfigResponse);
+  rpc SetConfig(SetConfigRequest) returns (SetConfigResponse);
+}
+
+// ======== messages ========
+
+message Empty {}
+
+message StreamAck {
+  uint64 received = 1;
+}
+
+message ContainerMeta {
+  string cluster = 1;
+  string node_name = 2;
+  string namespace = 3;
+  string pod = 4;
+  string container = 5;
+  string container_id = 6;
+  string image = 7;
+  map<string, string> labels = 8;
+  uint32 pid_ns = 9;
+  uint32 mnt_ns = 10;
+}
+
+// ResolvedPath is the canonical full-path-resolution payload (plan §5b.1).
+// Mirrors pkg/types.ResolvedPath so Go-internal pipelines and external
+// subscribers share one wire schema. The two absolutizations (container-
+// relative vs host-global) always travel together — a path that resolves
+// inside the container but not on the host is still useful for rule
+// matching, and vice-versa.
+//
+// Failure never returns an empty message: callers set path_unresolved=true
+// plus an unresolved_reason token (enum-like string from
+// internal/path/resolver.go:Reason*) and optionally a dentry_hint tail
+// (last ~32 chars, ellipsis-prefixed) so operators can still correlate
+// partial evidence with other events.
+message ResolvedPath {
+  string container_abs = 1;
+  string host_abs = 2;
+  uint64 inode = 3;
+  uint32 dev_major = 4;
+  uint32 dev_minor = 5;
+  string mount_id = 6;
+  bool followed_symlink = 7;
+  bool path_unresolved = 8;
+  string unresolved_reason = 9;
+  string dentry_hint = 10;
+}
+
+message IntentEvent {
+  string intent_id = 1;
+  string kind = 2;
+  uint64 start_ns = 3;
+  uint64 end_ns = 4;
+  repeated string contributing_event_ids = 5;
+  map<string, string> attributes = 6;
+  ContainerMeta meta = 7;
+  uint32 severity = 8;
+  double confidence = 9;
+}
+
+// SyscallArg is one decoded argument on a raw SyscallEvent.
+message SyscallArg {
+  string name = 1;
+  string type = 2;
+  string value = 3;
+  bytes raw = 4;
+}
+
+// SyscallEvent is the raw enter/exit-paired syscall record, emitted on
+// the "raw" stream when --enable-raw-stream is set. Volume is much
+// higher than IntentEvent; most consumers should prefer intents.
+message SyscallEvent {
+  uint64 timestamp_ns = 1;
+  string event_id = 2;
+  uint32 cpu_id = 3;
+
+  int32 host_pid = 4;
+  int32 host_tid = 5;
+  int32 host_ppid = 6;
+  int32 pid = 7;
+  int32 tid = 8;
+  uint32 uid = 9;
+  uint32 gid = 10;
+
+  string comm = 11;
+  string exe_path = 12;
+
+  int32 syscall_id = 13;
+  string syscall_name = 14;
+  repeated SyscallArg args = 15;
+  int32 retval = 16;
+  string retcode = 17;
+  uint64 duration_ns = 18;
+
+  string category = 19;
+  string operation = 20;
+  string resource = 21;
+  uint32 severity = 22;
+
+  ContainerMeta meta = 23;
+}
+
+message DeviationEvent {
+  string deviation_id = 1;
+  string profile_id = 2;
+  string kind = 3;
+  double deviation_score = 4;
+  string evidence = 5;
+  repeated string related_intent_ids = 6;
+  ContainerMeta meta = 7;
+}
+
+message GraphEdge {
+  string edge_id = 1;
+  string src_node = 2;
+  string dst_node = 3;
+  string kind = 4;
+  uint64 ts_ns = 5;
+  map<string, string> attributes = 6;
+  string session_id = 7;
+}
+
+message AuditEvent {
+  uint64 ts_ns = 1;
+  string kind = 2;      // e.g. "dropped_after_wal_overflow", "adaptive_downgrade"
+  string summary = 3;
+  map<string, string> attributes = 4;
+}
+
+message ContainerLifecycleEvent {
+  uint64 ts_ns = 1;
+  string phase = 2;    // "created" | "started" | "stopped" | "candidate"
+  ContainerMeta meta = 3;
+  uint32 pid_ns = 4;
+  uint32 mnt_ns = 5;
+}
+
+message Cursor {
+  string node_id = 1;
+  string stream = 2;
+  uint64 seq = 3;
+}
+
+message EventEnvelope {
+  Cursor cursor = 1;
+  oneof payload {
+    IntentEvent intent = 11;
+    DeviationEvent deviation = 12;
+    GraphEdge graph_edge = 13;
+    ContainerLifecycleEvent lifecycle = 14;
+    AuditEvent audit = 15;
+    SyscallEvent raw_syscall = 16;
+  }
+}
+
+message EventFilter {
+  repeated string namespaces = 1;
+  repeated string pods = 2;
+  repeated string kinds = 3;
+  uint32 min_severity = 4;
+}
+
+enum DeliveryGuarantee {
+  AT_MOST_ONCE = 0;
+  AT_LEAST_ONCE = 1;
+}
+
+enum OnExpiredPolicy {
+  RESET_TO_LIVE = 0;
+  RESET_TO_SNAPSHOT = 1;
+  FAIL = 2;
+}
+
+message SubscribeRequest {
+  repeated string streams = 1;
+  EventFilter filter = 2;
+  string consumer_id = 3;
+  Cursor cursor = 4;
+  DeliveryGuarantee guarantee = 5;
+  uint32 flow_control_window = 6;
+  OnExpiredPolicy on_expired = 7;
+}
+
+message AckRequest {
+  string consumer_id = 1;
+  Cursor cursor = 2;
+}
+
+message AckResponse {}
+
+message SnapshotRequest {
+  bool sessions = 1;
+  bool contracts = 2;
+  bool profiles = 3;
+}
+
+// ======== Typed-stream RPCs ========
+
+message IntentStreamRequest {
+  EventFilter filter = 1;
+  Cursor cursor = 2;
+  uint32 flow_control_window = 3;
+  OnExpiredPolicy on_expired = 4;
+}
+
+message DeviationStreamRequest {
+  repeated string kinds = 1;              // new_exec | rare_syscall | ...
+  double min_score = 2;                   // drop deviations below this score
+  uint32 flow_control_window = 3;         // live queue depth; default 256
+  repeated string namespaces = 4;         // match ContainerMeta.Namespace
+  repeated string pods = 5;               // match ContainerMeta.Pod
+}
+
+message RawStreamRequest {
+  repeated string syscalls = 1;           // empty = all; else include-list
+  repeated string categories = 2;         // file | net | process | creds | ...
+  uint32 flow_control_window = 3;         // live queue depth; default 256
+  repeated string namespaces = 4;         // match ContainerMeta.Namespace
+  repeated string pods = 5;               // match ContainerMeta.Pod
+}
+
+message GraphQuery {
+  string node_id = 1;                     // e.g. "proc:1234" / "cont:abc"
+  string query = 2;                       // "lineage" | "peers" | "touches" | "reaches"
+  uint32 max_depth = 3;                   // only meaningful for "reaches"; ignored otherwise
+}
+
+message GraphSnapshot {
+  string node_id = 1;
+  string query = 2;
+  repeated string result_ids = 3;         // order-preserved result set
+}
+
+message SessionStreamRequest {
+  string session_id = 1;
+  uint32 flow_control_window = 2;
+}
+
+// SessionUpdate is the element of SubscribeSession. A pure-edge message
+// (closed=false) is a live edge addition; closed=true is emitted exactly
+// once when the session ends (TTL expiry / cap eviction) and is terminal.
+message SessionUpdate {
+  GraphEdge edge = 1;
+  bool closed = 2;
+  string session_id = 3;                  // redundant with edge.session_id, but set on the terminal closed message where edge is nil
+}
+
+// ======== Admin messages ========
+
+message AgentStatus {
+  string node_name = 1;
+  string cluster = 2;
+  string version = 3;
+  uint64 uptime_sec = 4;
+  uint64 syscalls_observed = 5;
+  uint64 intents_emitted = 6;
+  uint64 frames_read = 7;
+  uint64 frames_dropped = 8;
+  uint32 adaptive_level = 9;
+  double ringbuf_usage = 10;
+  map<string, string> info = 11;
+  // schema_version declares the wire-format generation this agent emits
+  // (IntentEvent, DeviationEvent, GraphEdge, ContainerLifecycleEvent,
+  // AuditEvent, EventEnvelope, ResolvedPath). v0.1 pins a single value
+  // "v1"; a future v0.2 layout bump (per-CPU delta headers, intent state
+  // machine) changes this to "v2" so klctl + aggregator can negotiate or
+  // refuse mismatched pairs rather than silently drift.
+  string schema_version = 12;
+}
+
+message PolicyList {
+  repeated PolicySummary items = 1;
+}
+
+message PolicySummary {
+  string kind = 1;  // HookSubscription | BaselinePolicy | BehaviorContract
+  string name = 2;
+  string node_scope = 3;
+  map<string, string> metadata = 4;
+}
+
+message Policy {
+  string kind = 1;
+  string name = 2;
+  bytes payload = 3;  // YAML or JSON bytes
+}
+
+message PolicyRef {
+  string kind = 1;
+  string name = 2;
+}
+
+message ApplyResult {
+  bool ok = 1;
+  string message = 2;
+  repeated string warnings = 3;
+}
+
+message DeleteResult {
+  bool ok = 1;
+  string message = 2;
+}
+
+message DiagnoseReport {
+  string kernel_version = 1;
+  bool btf_available = 2;
+  bool bpf_lsm_available = 3;
+  string cgroup_version = 4;
+  map<string, string> probes = 5; // capability name → "ok"/"missing"/"fallback"
+  repeated string warnings = 6;
+}
+
+message CapabilityReport {
+  string node_id = 1;
+  KernelInfo kernel = 2;
+  map<string, string> helpers = 3;
+  repeated HookCap hooks = 4;
+}
+
+message KernelInfo {
+  string version = 1;
+  repeated string lsms = 2;
+  string cgroup_version = 3;
+  bool btf_available = 4;
+}
+
+message HookCap {
+  string kind = 1;
+  string name = 2;
+  bool available = 3;
+  string unavailable_reason = 4;
+  repeated string arg_schema = 5;
+  string fallback_suggestion = 6;
+}
+
+message TopRequest {
+  uint32 interval_ms = 1;
+  uint32 top_n = 2;
+}
+
+message TopSnapshot {
+  uint64 ts_ns = 1;
+  repeated TopRow rows = 2;
+}
+
+message TopRow {
+  string key = 1;     // pod/node/syscall — by agent policy
+  uint64 rate_per_s = 2;
+  uint64 total = 3;
+  map<string, string> labels = 4;
+}
+
+message DumpRequest {
+  string container_id = 1;
+  uint64 since_ns = 2;
+  uint64 until_ns = 3;
+}
+
+// PromoteRequest asks the agent to freeze its in-memory Learner into a
+// portable Profile. min_samples is the same floor as `kloudlens
+// --min-samples`; image_ref + label_hash seed the Profile's stable ID.
+message PromoteRequest {
+  uint64 min_samples = 1;
+  string image_ref = 2;
+  string label_hash = 3;
+}
+
+// PromoteResponse carries the serialized Profile as bytes (baseline's own
+// JSON encoding) plus a few summary fields that klctl prints without
+// re-decoding. Returning bytes rather than a nested proto keeps the
+// Profile canonical encoding in one place (pkg/baseline).
+message PromoteResponse {
+  bytes profile_json = 1;
+  string profile_id = 2;
+  uint64 sample_count = 3;
+  double confidence = 4;
+}
+
+// ActivateRequest attaches a Detector to the running pipeline. Empty
+// profile_json deactivates any currently-attached Detector — the request
+// shape matches "set or clear" in a single RPC.
+message ActivateRequest {
+  bytes profile_json = 1;
+}
+
+message ActivateResponse {
+  string profile_id = 1;   // empty when deactivated
+  bool deactivated = 2;
+}
+
+// ConfigResponse enumerates every runtime-tunable key the agent supports.
+// Values are strings so klctl can pass them through the CLI unchanged;
+// parsing back to native types (duration, bool, int) is the handler's job.
+message ConfigResponse {
+  map<string, string> entries = 1;
+}
+
+// SetConfigRequest applies entries to the agent. The server iterates the
+// map in insertion order is NOT guaranteed — callers that need ordered
+// application should issue multiple SetConfig calls.
+message SetConfigRequest {
+  map<string, string> entries = 1;
+}
+
+// SetConfigResponse reports per-key outcome. `applied` mirrors the keys
+// that took effect with their normalized string form; `errors` maps any
+// rejected key to a human-readable reason (unknown key, invalid value,
+// parse failure). A caller with all-green status receives an empty
+// `errors` map.
+message SetConfigResponse {
+  map<string, string> applied = 1;
+  map<string, string> errors = 2;
+}

@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: baselinepolicies.kloudlens.io
+spec:
+  group: kloudlens.io
+  scope: Namespaced
+  names:
+    plural: baselinepolicies
+    singular: baselinepolicy
+    kind: BaselinePolicy
+    shortNames: [bp]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [selector]
+              properties:
+                selector:
+                  type: object
+                  properties:
+                    matchLabels:
+                      type: object
+                      additionalProperties: {type: string}
+                mode:
+                  type: string
+                  enum: [learn, enforce, audit]
+                  default: learn
+                minConfidence:
+                  type: number
+                  format: double
+                  default: 0.7
+                minSamples:
+                  type: integer
+                  default: 50
+                windowSeconds:
+                  type: integer
+                  default: 600
+      subresources:
+        status: {}

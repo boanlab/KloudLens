@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: behaviorcontracts.kloudlens.io
+spec:
+  group: kloudlens.io
+  scope: Namespaced
+  names:
+    plural: behaviorcontracts
+    singular: behaviorcontract
+    kind: BehaviorContract
+    shortNames: [bc]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              properties:
+                process:
+                  type: object
+                  properties:
+                    exec:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          binary: {type: string}
+                file:
+                  type: object
+                  properties:
+                    read:
+                      type: array
+                      items: &fileRule
+                        type: object
+                        properties:
+                          path: {type: string}
+                          pathGlob: {type: string}
+                    write:
+                      type: array
+                      items: *fileRule
+                network:
+                  type: object
+                  properties:
+                    egress:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          peer: {type: string}
+                          proto: {type: string}
+                capabilities:
+                  type: array
+                  items: {type: string}
+                syscalls:
+                  type: array
+                  items: {type: string}
+                creds:
+                  type: object
+                  properties:
+                    uids:
+                      type: array
+                      items: {type: integer, format: int64}
+      subresources:
+        status: {}

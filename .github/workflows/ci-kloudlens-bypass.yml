@@ -1,0 +1,42 @@
+# Skipped-success mirror of ci-kloudlens.
+# Posts identical check names so branch protection required-checks are
+# satisfied on PRs that do not touch KloudLens paths.
+name: ci-kloudlens
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'internal/**'
+      - 'api/**'
+      - 'bpf/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'Dockerfile'
+      - '.github/workflows/ci-kloudlens.yml'
+      - '.github/workflows/ci-kloudlens-bypass.yml'
+
+jobs:
+  go-fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped (paths not affected)"
+  go-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped (paths not affected)"
+  go-sec:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped (paths not affected)"
+  go-test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped (paths not affected)"
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped (paths not affected)"

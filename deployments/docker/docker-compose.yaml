@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 BoanLab @ DKU
+#
+# Local single-node stack: kloudlens + a WAL-backed subscribe endpoint.
+# Run with:
+#   docker compose up --build
+# Host eBPF requires privileged + /sys/kernel/debug mount.
+
+services:
+  kloudlens:
+    build:
+      context: ../../KloudLens
+      dockerfile: Dockerfile
+    image: kloudlens/kloudlens:dev
+    container_name: kloudlens
+    privileged: true
+    pid: host
+    network_mode: host
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /sys/fs/bpf:/sys/fs/bpf
+      - /var/run/containerd/containerd.sock:/run/containerd/containerd.sock
+      - kloudlens-wal:/var/lib/kloudlens/wal
+    command: >
+      /usr/local/bin/kloudlens
+      --enrich=cri
+      --cri-endpoint=unix:///run/containerd/containerd.sock
+      --node=$(hostname)
+      --cluster=local
+      --wal-dir=/var/lib/kloudlens/wal
+      --subscribe-addr=0.0.0.0:8181
+      --admin-addr=0.0.0.0:8180
+
+volumes:
+  kloudlens-wal:

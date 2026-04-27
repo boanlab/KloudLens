@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nodecapabilities.kloudlens.io
+spec:
+  group: kloudlens.io
+  scope: Cluster
+  names:
+    plural: nodecapabilities
+    singular: nodecapability
+    kind: NodeCapability
+    shortNames: [nc]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                node: {type: string}
+            status:
+              type: object
+              properties:
+                reportedAt: {type: string, format: date-time}
+                kernel: {type: string}
+                arch: {type: string}
+                btf: {type: boolean}
+                ringbuf: {type: boolean}
+                bpfLSM: {type: boolean}
+                fentry: {type: boolean}
+                kprobeMulti: {type: boolean}
+                cgroupV2: {type: boolean}
+                hooks:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name: {type: string}
+                      available: {type: boolean}
+                      reason: {type: string}
+                      mechanism: {type: string}
+                degraded:
+                  type: array
+                  items: {type: string}
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Kernel
+          type: string
+          jsonPath: .status.kernel
+        - name: BTF
+          type: boolean
+          jsonPath: .status.btf
+        - name: LSM
+          type: boolean
+          jsonPath: .status.bpfLSM
+        - name: ReportedAt
+          type: date
+          jsonPath: .status.reportedAt

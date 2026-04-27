@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: Apache-2.0
+# Root-level golangci-lint config. Applies to every Go module in the repo
+# since the CLI invocation cd's into each module and runs with this config
+# inherited from an ancestor directory.
+#
+# Why this file exists: the default golangci-lint set treats staticcheck's
+# quick-fix ("QF*") and style ("ST*") rules as failures, which floods PRs
+# with spurious diffs. We keep the bug-catching linters (govet, errcheck,
+# staticcheck-SA, ineffassign, unused) and drop the opinionated ones.
+#
+# Generated code is excluded — any *.pb.go (in the protobuf/ module or
+# any other module) would otherwise drown lint output in protoc-generated
+# quirks.
+
+version: "2"
+
+run:
+  timeout: 5m
+  go: "1.24"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - errcheck
+    - ineffassign
+    - unused
+    - staticcheck
+
+  settings:
+    staticcheck:
+      # Only actual-bug checks (SA*). QF* (quick-fix suggestions) and ST*
+      # (style) are deliberately off — run gofmt for formatting, not lint.
+      checks:
+        - SA*
+    errcheck:
+      # fmt.Fprintf on stderr/stdout failure handling is pointless — swallowing
+      # them is idiomatic across this codebase.
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+  exclusions:
+    generated: strict
+    paths:
+      - ".*\\.pb\\.go$"
+    rules:
+      # Close errors on defer / cleanup paths are idiomatic: the program is
+      # already tearing down so there's nothing to do with the error. We'd
+      # rather keep that terse than sprinkle `_ = x.Close()` everywhere.
+      - linters: [errcheck]
+        source: "Close\\(\\)"
+      # Tests frequently call Close in defers for wal/graph/socket fixtures.
+      - linters: [errcheck]
+        path: '_test\.go'

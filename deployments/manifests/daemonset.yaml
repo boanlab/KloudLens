@@ -1,0 +1,204 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 BoanLab @ DKU
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kloudlens
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kloudlens
+  namespace: kloudlens
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kloudlens
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["kloudlens.io"]
+    resources: ["hooksubscriptions", "baselinepolicies", "behaviorcontracts", "eventroles", "nodecapabilities"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kloudlens.io"]
+    resources: ["hooksubscriptions/status", "baselinepolicies/status", "behaviorcontracts/status", "nodecapabilities/status"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kloudlens
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kloudlens
+subjects:
+  - kind: ServiceAccount
+    name: kloudlens
+    namespace: kloudlens
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kloudlens-config
+  namespace: kloudlens
+data:
+  # Default enricher config — edit this ConfigMap in-place per cluster.
+  enrich: "cri"
+  cri-endpoint: "unix:///run/containerd/containerd.sock"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kloudlens
+  namespace: kloudlens
+  labels:
+    app.kubernetes.io/name: kloudlens
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kloudlens
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kloudlens
+    spec:
+      serviceAccountName: kloudlens
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: agent
+          image: docker.io/boanlab/kloudlens:latest
+          imagePullPolicy: IfNotPresent
+          # ENTRYPOINT in the image already invokes /usr/local/bin/kloudlens,
+          # so args is the flag list only. Repeating the binary path here
+          # would land as a positional argv[1], terminating flag.Parse() and
+          # silently reverting --enrich to its default "off".
+          args:
+            - "--node=$(NODE_NAME)"
+            - "--cluster=$(CLUSTER_NAME)"
+            - "--enrich=$(ENRICH_MODE)"
+            - "--cri-endpoint=$(CRI_ENDPOINT)"
+            - "--wal-dir=/var/lib/kloudlens/wal"
+            - "--subscribe-addr=0.0.0.0:8181"
+            - "--admin-addr=0.0.0.0:8180"
+            - "--metrics-addr=0.0.0.0:9090"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CLUSTER_NAME
+              value: "default"
+            - name: ENRICH_MODE
+              valueFrom:
+                configMapKeyRef: {name: kloudlens-config, key: enrich}
+            - name: CRI_ENDPOINT
+              valueFrom:
+                configMapKeyRef: {name: kloudlens-config, key: cri-endpoint}
+          ports:
+            - name: admin
+              containerPort: 8180
+            - name: events
+              containerPort: 8181
+            - name: metrics
+              containerPort: 9090
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["BPF", "PERFMON", "SYS_ADMIN", "SYS_RESOURCE", "NET_ADMIN"]
+          volumeMounts:
+            - name: sys-kernel-debug
+              mountPath: /sys/kernel/debug
+            - name: sys-kernel-tracing
+              mountPath: /sys/kernel/tracing
+            - name: sys-fs-bpf
+              mountPath: /sys/fs/bpf
+              mountPropagation: Bidirectional
+            # Host cgroupv2 unified hierarchy. Required so cgroup_skb DNS
+            # programs can attach at the host root and observe every pod's
+            # network packets (cgroup_skb attach is per-cgroup; pods live
+            # under /sys/fs/cgroup/kubepods.slice/...).
+            - name: sys-fs-cgroup
+              mountPath: /sys/fs/cgroup
+            - name: cri-socket
+              mountPath: /run/containerd/containerd.sock
+              readOnly: true
+            - name: wal
+              mountPath: /var/lib/kloudlens/wal
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+      volumes:
+        - name: sys-kernel-debug
+          hostPath: {path: /sys/kernel/debug}
+        - name: sys-kernel-tracing
+          hostPath: {path: /sys/kernel/tracing}
+        - name: sys-fs-bpf
+          hostPath: {path: /sys/fs/bpf, type: DirectoryOrCreate}
+        - name: sys-fs-cgroup
+          hostPath: {path: /sys/fs/cgroup}
+        - name: cri-socket
+          hostPath: {path: /run/containerd/containerd.sock}
+        - name: wal
+          hostPath: {path: /var/lib/kloudlens/wal, type: DirectoryOrCreate}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kloudlens-admin
+  namespace: kloudlens
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: kloudlens
+  ports:
+    - name: admin
+      port: 8180
+      targetPort: admin
+    - name: events
+      port: 8181
+      targetPort: events
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kloudlens-ingress
+  namespace: kloudlens
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kloudlens
+  policyTypes: ["Ingress"]
+  ingress:
+    # Permit scraping by Prometheus (label: prometheus) and klctl access
+    # from operator namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9090
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kloudlens
+      ports:
+        - port: 8180
+        - port: 8181

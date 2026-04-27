@@ -1,0 +1,80 @@
+name: ci-kloudlens
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'internal/**'
+      - 'api/**'
+      - 'bpf/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'Dockerfile'
+      - '.github/workflows/ci-kloudlens.yml'
+      - '.github/workflows/ci-kloudlens-bypass.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'internal/**'
+      - 'api/**'
+      - 'bpf/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'Dockerfile'
+      - '.github/workflows/ci-kloudlens.yml'
+      - '.github/workflows/ci-kloudlens-bypass.yml'
+
+jobs:
+  go-fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      - name: Check go-fmt
+        run: make gofmt
+
+  go-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      - name: Run golangci-lint
+        run: make golangci-lint
+
+  go-sec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      - name: Run Gosec Security Scanner
+        run: make gosec
+
+  go-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      - name: Run unit tests
+        run: make test
+
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build KloudLens Image
+        run: make build-image

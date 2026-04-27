@@ -1,0 +1,17 @@
+name: license
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  license:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check License Header
+        uses: apache/skywalking-eyes@a790ab8dd23a7f861c18bd6aaa9b012e3a234bce
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: CLI issue
+    url: https://github.com/boanlab/kloudlens-cli/issues
+    about: For bugs or feature requests in klctl, open the issue in the kloudlens-cli repo.
+  - name: Security Vulnerability
+    url: https://github.com/boanlab/KloudLens/blob/main/SECURITY.md
+    about: Do not open a public issue for security vulnerabilities. See SECURITY.md.
+  - name: Question / Discussion
+    url: https://github.com/boanlab/KloudLens/discussions
+    about: For general questions, use GitHub Discussions instead of Issues.
