@@ -21,7 +21,11 @@
 // ARG_UINT(addr_be — network-byte-order IPv4 like the connect/bind path)
 // ARG_ULONG(cgroup_id — bpf_skb_cgroup_id, used by the enricher to
 // attribute the answer to the receiving pod)
-// ARG_SOURCE(comm, dedup)
+//
+// Unlike the syscall-tracepoint emitters this path does not stamp
+// ARG_SOURCE(comm): the comm dedup key is bpf_get_current_pid_tgid,
+// which is unavailable in cgroup_skb context. Userspace consumers
+// reconstruct the receiving process via the cgroup_id field instead.
 //
 // Parser scope:
 // - Only DNS responses (QR bit set in header flags).
@@ -182,12 +186,17 @@ static __always_inline int kl_dns_emit_answer(const __u8 *qname, __u32 qname_len
  if (qname_len <= 1) return 0; // empty / root only
  struct kl_scratch *s = kl_scratch_get();
  if (!s) return 0;
- // arg_num = 5: ARG_RESOURCE(qname) + ARG_UINT(rtype) + ARG_UINT(addr_be)
- // + ARG_ULONG(cgroup_id) + ARG_SOURCE(comm). Bumped from 4 to 5 to
- // carry the cgroup_id without dropping the source-tag dedup.
- if (kl_fill_header(s, KL_PSEUDO_DNS_ANSWER, EVENT_UNARY, 5) < 0) return 0;
+ // arg_num = 5 nominal: ARG_RESOURCE(qname) + ARG_UINT(rtype)
+ // + ARG_UINT(addr_be) + ARG_ULONG(cgroup_id) + ARG_SOURCE(comm).
+ // The wire record carries 4 args: ARG_RESOURCE(qname) + ARG_UINT(rtype)
+ // + ARG_UINT(addr_be) + ARG_ULONG(cgroup_id). We start the header at 5
+ // (the value that includes ARG_SOURCE) for shape parity with the regular
+ // tracepoint emitters; kl_put_source_skb is a no-op in this context, so
+ // the kl_patch_arg_num call below shrinks the stamped count to 4 before
+ // the record is submitted.
+ if (kl_fill_header_skb(s, KL_PSEUDO_DNS_ANSWER, EVENT_UNARY, 5, cgroup_id) < 0) return 0;
 
- int wrote_src = kl_put_source_if_unknown(s);
+ int wrote_src = kl_put_source_skb(s);
  if (wrote_src < 0) return 0;
 
  // ARG_RESOURCE: the qname bytes. We hand-roll the tag/length/bytes write

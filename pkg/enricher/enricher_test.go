@@ -102,21 +102,34 @@ func TestEnricherResolveHostProcessZero(t *testing.T) {
 	_ = types.ContainerMeta{}
 }
 
-// TestEnricherLazyOnMissReload picks up a container that wasn't in the
-// initial scan snapshot: create the fake /proc entry AFTER Start, then call
-// Resolve and expect a miss-triggered rescan to find it.
-func TestEnricherLazyOnMissReload(t *testing.T) {
+// TestEnricherResolveMissIsHotPathSafe asserts the v0.1.5 contract: a
+// cache miss must NOT walk /proc on the Resolve hot path. The miss
+// returns partial meta (cluster + node + raw NS); the next periodic
+// Rescan picks up the container, after which Resolve returns full meta.
+func TestEnricherResolveMissIsHotPathSafe(t *testing.T) {
 	root := t.TempDir()
 	e := NewEnricher(Options{Proc: &ProcScanner{Root: root}})
 	e.Rescan(context.Background()) // empty snapshot
 
-	// New container appears.
+	// New container appears AFTER the initial scan.
 	writePID(t, root, 200,
 		"pid:[4026532011]", "mnt:[4026532012]",
 		"0::/kubepods.slice/cri-containerd-"+hex64("c3")+".scope")
 
+	// First Resolve is a miss — must not trigger a scan, must return
+	// partial meta with only NS values stamped.
 	got := e.Resolve(4026532011, 4026532012)
+	if got.ContainerID != "" {
+		t.Fatalf("Resolve must not synchronously scan on miss; got ContainerID=%q", got.ContainerID)
+	}
+	if got.PidNS != 4026532011 || got.MntNS != 4026532012 {
+		t.Fatalf("miss should preserve NS pair: %+v", got)
+	}
+
+	// After a periodic rescan, the same lookup returns full meta.
+	e.Rescan(context.Background())
+	got = e.Resolve(4026532011, 4026532012)
 	if got.ContainerID != hex64("c3") {
-		t.Fatalf("lazy rescan didn't pick up new container: %+v", got)
+		t.Fatalf("rescan didn't pick up new container: %+v", got)
 	}
 }

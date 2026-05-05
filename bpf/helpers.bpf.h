@@ -149,6 +149,56 @@ static __always_inline int kl_fill_header(struct kl_scratch *s,
  return 0;
 }
 
+// kl_fill_header_skb is the cgroup_skb-safe variant of kl_fill_header.
+// The cgroup_skb program type runs in softirq context where the task
+// helpers (bpf_get_current_task, bpf_get_current_pid_tgid,
+// bpf_get_current_uid_gid) either point at whatever victim happens to
+// be on the CPU --- so the values are bogus for attribution --- or are
+// rejected outright by the verifier on some kernels (notably Ubuntu's
+// AWS HWE 5.15/6.5 builds, which reject helper #14 in cgroup_skb).
+// We zero every task-derived field and rely on the caller-supplied
+// cgroup_id (from bpf_skb_cgroup_id) for pod attribution. Userspace
+// already treats zero (pid_ns, mnt_ns, host_pid) as "unknown / host
+// process" via the standard ContainerMeta nullability path.
+static __always_inline int kl_fill_header_skb(struct kl_scratch *s,
+ __s32 syscall_id,
+ __s8 event_type,
+ __s8 arg_num,
+ __u64 cgroup_id)
+{
+ struct event_t *ev = kl_scratch_reserve(s, sizeof(*ev));
+ if (!ev) return -1;
+
+ ev->timestamp = bpf_ktime_get_ns();
+
+ ev->host_pid = 0;
+ ev->host_tid = 0;
+ ev->pid = 0;
+ ev->tid = 0;
+ ev->host_ppid = 0;
+ ev->ppid = 0;
+ ev->pid_ns_id = 0;
+ ev->mnt_ns_id = 0;
+ ev->cgroup_id = cgroup_id;
+ ev->uid = 0;
+ ev->gid = 0;
+
+ ev->event_id = 0;
+ ev->cpu_id = (__u16)bpf_get_smp_processor_id();
+ ev->event_type = event_type;
+ ev->arg_num = arg_num;
+
+ ev->syscall_id = syscall_id;
+ ev->retval = 0;
+
+ // Skip the per-CPU compact-frame base anchor. The base keys off
+ // pid_tgid which is not available here, and the cgroup_skb
+ // ringbuf is dns-only (no compact emitters consult the base from
+ // softirq).
+
+ return 0;
+}
+
 // kl_try_fill_compact writes a 16-byte compact header at the head of the
 // scratch and returns 0 on success. Fails (-1) when the per-CPU base is
 // stale: another task has run on this CPU (pid_tgid mismatch) or the ts
@@ -735,6 +785,18 @@ static __always_inline int kl_put_source_if_unknown(struct kl_scratch *s)
 
  if (kl_put_comm_bytes(s) < 0) return -1;
  return 1;
+}
+
+// kl_put_source_skb is the cgroup_skb-safe variant of
+// kl_put_source_if_unknown. It always returns 0 (no comm bytes
+// written): the regular variant dedups by host_pid via
+// bpf_get_current_pid_tgid, which is unavailable in cgroup_skb
+// context. Callers run the same arg_num adjustment they take when
+// the regular variant short-circuits on a dedup hit.
+static __always_inline int kl_put_source_skb(struct kl_scratch *s)
+{
+ (void)s;
+ return 0;
 }
 
 // kl_put_source_always — unconditional comm emission; used by hooks that
