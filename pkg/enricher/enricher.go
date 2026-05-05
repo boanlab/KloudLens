@@ -158,6 +158,14 @@ func (e *Enricher) Rescan(ctx context.Context) { e.rescan(ctx) }
 // Resolve returns the ContainerMeta cached for (pidNS, mntNS). Both zero NS
 // values short-circuit to a zero return (the host process case) so the bridge
 // avoids pointless lookups.
+//
+// On a cache miss the function returns a partial meta (cluster + node +
+// raw NS) without scanning /proc; the next periodic rescan populates the
+// cache for subsequent events from the same container. The hot path
+// therefore stays O(1) under short-lived process churn (forked workers,
+// ephemeral containers). A brand-new container's first events carry
+// partial meta until at most RescanInterval (default 30s); after that
+// they resolve to full meta like any other.
 func (e *Enricher) Resolve(pidNS, mntNS uint32) types.ContainerMeta {
 	if pidNS == 0 && mntNS == 0 {
 		return types.ContainerMeta{}
@@ -165,24 +173,15 @@ func (e *Enricher) Resolve(pidNS, mntNS uint32) types.ContainerMeta {
 	key := NSKey{PidNS: pidNS, MntNS: mntNS}
 	entry, ok := e.ns.Lookup(key)
 	if !ok {
-		// Lazy on-miss scan: refresh once in case a new container appeared
-		// between periodic rescans. We don't loop or block; the next event
-		// from the same container will hit if the rescan finds it.
-		if snap, err := e.opts.Proc.Scan(); err == nil {
-			e.ns.Replace(snap)
-			entry, ok = e.ns.Lookup(key)
-		}
-		if !ok {
-			// NS pair didn't map to a known container — still stamp
-			// node identity so operators can attribute the event to a
-			// node even when the pod side is unknown (host process,
-			// fresh container the scanner hasn't picked up yet, …).
-			return types.ContainerMeta{
-				Cluster:  e.opts.Cluster,
-				NodeName: e.opts.NodeName,
-				PidNS:    pidNS,
-				MntNS:    mntNS,
-			}
+		// NS pair didn't map to a known container — still stamp node
+		// identity so operators can attribute the event to a node even
+		// when the pod side is unknown (host process, fresh container the
+		// scanner hasn't picked up yet, …). Periodic rescan will fill in.
+		return types.ContainerMeta{
+			Cluster:  e.opts.Cluster,
+			NodeName: e.opts.NodeName,
+			PidNS:    pidNS,
+			MntNS:    mntNS,
 		}
 	}
 	meta := types.ContainerMeta{

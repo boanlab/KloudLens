@@ -66,6 +66,7 @@ type cliFlags struct {
 	enrichInterval time.Duration
 	criEndpoint    string
 	dockerEndpoint string
+	graphMode      string
 	nodeName       string
 	clusterName    string
 
@@ -118,6 +119,7 @@ func parseFlags() cliFlags {
 	flag.DurationVar(&f.enrichInterval, "enrich-interval", 30*time.Second, "how often the enricher rebuilds its NS/CRI caches")
 	flag.StringVar(&f.criEndpoint, "cri-endpoint", "", "CRI runtime socket URI for crictl (e.g. unix:///run/containerd/containerd.sock); empty uses crictl defaults")
 	flag.StringVar(&f.dockerEndpoint, "docker-endpoint", "unix:///var/run/docker.sock", "Docker Engine API endpoint (unix:///path or tcp://host:port) for --enrich=docker")
+	flag.StringVar(&f.graphMode, "graph", "on", "causal session graph mode: on | off. Off skips Graph.AddEdge on the hot path; live edge subscribers (klctl stream graph) still receive events. Reduces per-event CPU on syscall-heavy workloads.")
 	flag.StringVar(&f.nodeName, "node", "", "node.name / host.name stamp on every ContainerMeta")
 	flag.StringVar(&f.clusterName, "cluster", "", "cluster name stamp on every ContainerMeta")
 	flag.StringVar(&f.walDir, "wal-dir", "", "directory for the intent WAL (empty = no WAL / no subscribe server)")
@@ -167,6 +169,15 @@ func run(f cliFlags) error {
 
 	pipe := NewPipeline(out, time.Now)
 	pipe.Lineage = &lineage.Walker{} // defaults to /proc, cap=16
+	switch f.graphMode {
+	case "on":
+		// default — graph store maintained on hot path
+	case "off":
+		pipe.GraphDisabled = true
+		fmt.Fprintln(os.Stderr, "kloudlens: graph=off — Graph.AddEdge skipped on hot path; live edge sinks still fan out, QueryGraph returns empty")
+	default:
+		return fmt.Errorf("invalid --graph=%q (want on|off)", f.graphMode)
+	}
 	learnStart := time.Now()
 
 	// Load a frozen Profile and attach a Detector. The detector is meaningful

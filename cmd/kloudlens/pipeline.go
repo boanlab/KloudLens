@@ -73,8 +73,12 @@ type Pipeline struct {
 	Agg     *intent.Aggregator
 	History *history.Store
 	Graph   *graph.Store
-	Corr    *correlation.Detector
-	Learner *baseline.Learner
+	// GraphDisabled gates Graph.AddEdge on the hot path. Live edge sinks
+	// (klctl stream graph) still receive every edge regardless. Set by
+	// --graph=off; QueryGraph returns empty in that mode.
+	GraphDisabled bool
+	Corr          *correlation.Detector
+	Learner       *baseline.Learner
 	// detector is a read-mostly atomic pointer so the hot Handle path reads
 	// without locking. AttachDetector / BaselineActivate / BaselineDeactivate
 	// are the only writers; they CAS'd to swap. Legacy field name preserved
@@ -588,9 +592,15 @@ func (p *Pipeline) emitDeviation(ev types.DeviationEvent) {
 // It wraps Graph.AddEdge so each successful insertion fans out to registered
 // GraphEdgeSinks (e.g. the gRPC SubscribeSession handler). Callers stay the
 // same shape — they still pass a fully-populated types.GraphEdge.
+//
+// When GraphDisabled is true the in-memory store update is skipped to keep
+// the hot path O(1); subscribers (klctl stream graph) still receive every
+// edge so live consumers are unaffected, but QueryGraph returns empty.
 func (p *Pipeline) addEdge(e types.GraphEdge) {
-	if err := p.Graph.AddEdge(e); err != nil {
-		return
+	if !p.GraphDisabled {
+		if err := p.Graph.AddEdge(e); err != nil {
+			return
+		}
 	}
 	for _, s := range p.EdgeSinks {
 		s.OnLiveGraphEdge(e)

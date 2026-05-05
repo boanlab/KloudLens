@@ -114,6 +114,7 @@ adaptive downgrade, …).
 | `--enrich` | `off` | `off` / `proc` / `cri` / `docker` — pod & container metadata source |
 | `--cri-endpoint` | *(unset)* | CRI socket URI (e.g. `unix:///run/containerd/containerd.sock`); empty uses crictl defaults |
 | `--except-ns` | *(empty)* | Comma-separated `pidNS:mntNS` keys to skip (ignored if `--target-ns` is set) |
+| `--graph` | `on` | `on` / `off` — `off` skips `Graph.AddEdge` on the hot path; live edge subscribers (`klctl stream graph`) still receive every edge but `QueryGraph` returns empty. Reduces per-event CPU on syscall-heavy workloads at the cost of historical graph queries. |
 | `--mode` | `monitor` | `monitor` or `learn` — learn writes a `Profile` JSON on shutdown |
 | `--no-ebpf` | `false` | Skip the live eBPF loader (pipeline wire-check only — useful for local dev) |
 
